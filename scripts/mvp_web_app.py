@@ -27,17 +27,41 @@ DEFAULT_STRATEGY = "balanced"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_UI_OUTPUT_DIR = PROJECT_ROOT / "ProjetsEtudiantsHackathon2026" / "generated_policies"
 
+EXAMPLE_SCENARIOS = [
+    {
+        "label": "Commande PowerShell suspecte",
+        "scenario": DEFAULT_SCENARIO,
+        "asset_id": "win_srv_ops",
+        "strategy": "balanced",
+        "what_to_expect": "Doit recommander Sysmon pour voir CommandLine, ProcessName et ParentProcessName.",
+    },
+    {
+        "label": "Exploitation web type Log4Shell",
+        "scenario": "Exploit public facing application log4j apache web request payload",
+        "asset_id": "web_frontend",
+        "strategy": "balanced",
+        "what_to_expect": "Doit orienter vers l’exploitation d’application publique et les logs web.",
+    },
+    {
+        "label": "Exfiltration DNS",
+        "scenario": "Exfiltration over alternative protocol dns data transfer",
+        "asset_id": "network_dns",
+        "strategy": "minimal",
+        "what_to_expect": "Doit mettre en avant les signaux réseau/DNS et le compromis bruit vs couverture.",
+    },
+]
+
 
 def _escape(value: object) -> str:
     return html.escape(str(value or ""), quote=True)
 
 
 def _badge_class(priority: str) -> str:
-    return {
-        "indispensable": "danger",
-        "recommandé": "warn",
-        "optionnel": "soft",
-    }.get(priority, "soft")
+    return {"indispensable": "danger", "recommandé": "warn", "optionnel": "soft"}.get(priority, "soft")
+
+
+def _selected(value: str, expected: str) -> str:
+    return "selected" if value == expected else ""
 
 
 def build_demo_view_model(
@@ -64,29 +88,45 @@ def build_demo_view_model(
     recommendations = body["recommendations"]
     top = recommendations[0]
     mitre_candidates = body.get("mitre_candidates", [])
-    matched_terms = mitre_candidates[0].get("matched_terms", []) if mitre_candidates else []
+    best_candidate = next(
+        (candidate for candidate in mitre_candidates if candidate.get("ttp_id") == target.get("selected_ttp_id")),
+        mitre_candidates[0] if mitre_candidates else {},
+    )
+    matched_terms = best_candidate.get("matched_terms", [])
     top_fields = top.get("fields", [])
+
+    executive_summary = (
+        f"Collecter {top['log_source']} sur {target['asset_id']} pour détecter {target['selected_ttp_id']} "
+        f"({target['ttp_name']}). Priorité : {top['priority']}."
+    )
+    plain_language_result = {
+        "title": "Pourquoi cette recommandation est importante",
+        "body": (
+            f"Le scénario ressemble à {target['selected_ttp_id']} dans MITRE ATT&CK. "
+            f"Sur cet actif, les champs {', '.join(top_fields)} sont les signaux les plus utiles pour vérifier ce comportement."
+        ),
+    }
 
     decision_steps = [
         {
-            "label": "1. Scénario opérationnel",
+            "label": "1. Scénario",
             "value": scenario,
-            "explanation": "On part d’une phrase compréhensible par un analyste, pas d’un identifiant technique imposé.",
+            "explanation": "L’utilisateur décrit une situation en langage naturel, comme dans un briefing SOC.",
         },
         {
-            "label": "2. Matching MITRE ATT&CK",
+            "label": "2. Matching MITRE",
             "value": f"{target['selected_ttp_id']} — {target['ttp_name']}",
-            "explanation": "Le moteur compare le texte du scénario aux techniques MITRE Enterprise et conserve les candidats les plus proches.",
+            "explanation": f"Les mots communs retenus sont : {', '.join(matched_terms) or 'similarité textuelle'}.",
         },
         {
             "label": "3. Contexte actif",
             "value": f"{target['asset_id']} · {target['asset_type']} · criticité {target['asset_criticality']}",
-            "explanation": "La même menace ne mérite pas la même collecte selon l’actif, son exposition et son rôle métier.",
+            "explanation": f"Rôle : {target['business_role']}. La priorité dépend du contexte, pas seulement de la TTP.",
         },
         {
-            "label": "4. Score coût / bruit / couverture",
+            "label": "4. Score final",
             "value": f"{top['log_value_score']}/10 · {top['priority']}",
-            "explanation": "La priorité combine valeur menace, criticité de l’actif, couverture de détection, coût et bruit estimés.",
+            "explanation": "Ce score n’est pas une probabilité : c’est un score de valeur de collecte, basé sur menace, actif, couverture, coût et bruit.",
         },
     ]
 
@@ -110,6 +150,8 @@ def build_demo_view_model(
         "recommendations": recommendations,
         "mitre_candidates": mitre_candidates,
         "decision_steps": decision_steps,
+        "executive_summary": executive_summary,
+        "plain_language_result": plain_language_result,
         "why_this_result": why,
         "blind_spot": top["blind_spot_if_missing"],
         "json_output": str(DEFAULT_UI_OUTPUT_DIR / f"policy_{target['selected_ttp_id']}.json"),
@@ -118,12 +160,36 @@ def build_demo_view_model(
     }
 
 
+def _render_presets() -> str:
+    cards = []
+    for index, preset in enumerate(EXAMPLE_SCENARIOS):
+        cards.append(
+            f"""
+            <form method="post" action="/generate" class="preset-form">
+              <input type="hidden" name="preset" value="{index}">
+              <button class="preset-card" type="submit">
+                <span>Tester un exemple</span>
+                <strong>{_escape(preset['label'])}</strong>
+                <small>{_escape(preset['what_to_expect'])}</small>
+              </button>
+            </form>
+            """
+        )
+    return "".join(cards)
+
+
 def render_dashboard_html(view: dict) -> str:
-    """Render a polished, self-contained MVP dashboard."""
+    """Render a clear, presentation-oriented MVP dashboard."""
 
     top = view["top_recommendation"]
     priority = top["priority"]
     fields_html = "".join(f"<span class='chip'>{_escape(field)}</span>" for field in top.get("fields", []))
+    top_candidate = next(
+        (candidate for candidate in view["mitre_candidates"] if candidate.get("ttp_id") == view["selected_ttp_id"]),
+        view["mitre_candidates"][0] if view["mitre_candidates"] else {},
+    )
+    matched_terms = ", ".join(top_candidate.get("matched_terms", []))
+
     steps_html = "".join(
         f"""
         <article class="step-card">
@@ -151,8 +217,9 @@ def render_dashboard_html(view: dict) -> str:
             <h3>{_escape(rec['log_source'])}</h3>
             <span class="badge {_badge_class(rec['priority'])}">{_escape(rec['priority'])}</span>
           </div>
+          <p class="simple-line">À collecter : <strong>{_escape(', '.join(rec.get('fields', [])))}</strong></p>
           <div class="metrics">
-            <span>Score <b>{_escape(rec['log_value_score'])}/10</b></span>
+            <span>Score final <b>{_escape(rec['log_value_score'])}/10</b></span>
             <span>Coût <b>{_escape(rec['estimated_cost'])}</b></span>
             <span>Bruit <b>{_escape(rec['estimated_noise'])}</b></span>
             <span>Couverture <b>{_escape(rec['detection_coverage'])}</b></span>
@@ -171,123 +238,106 @@ def render_dashboard_html(view: dict) -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Log as Code — MVP interprétable</title>
   <style>
-    :root {{
-      --ink:#e7f0ff; --muted:#91a1b8; --panel:#111827; --line:#253247;
-      --bg:#070b12; --accent:#6ee7b7; --blue:#60a5fa; --danger:#fb7185; --warn:#fbbf24;
-    }}
+    :root {{ --ink:#152033; --muted:#617087; --paper:#f8fbff; --panel:#fff; --line:#d8e2ee; --navy:#0b1728; --blue:#1463ff; --green:#087f5b; --red:#c2255c; --amber:#b7791f; }}
     * {{ box-sizing:border-box; }}
-    body {{ margin:0; color:var(--ink); background:radial-gradient(circle at 18% 8%, #13315c 0, transparent 32%), radial-gradient(circle at 84% 12%, #14532d 0, transparent 30%), var(--bg); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }}
-    body:before {{ content:""; position:fixed; inset:0; pointer-events:none; background-image:linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size:34px 34px; mask-image:linear-gradient(to bottom, black, transparent 90%); }}
-    main {{ width:min(1180px, calc(100% - 36px)); margin:0 auto; padding:32px 0 54px; }}
-    .hero {{ display:grid; grid-template-columns:1.2fr .8fr; gap:18px; align-items:stretch; }}
-    .card {{ background:linear-gradient(180deg, rgba(17,24,39,.94), rgba(9,14,24,.94)); border:1px solid var(--line); border-radius:24px; box-shadow:0 24px 70px rgba(0,0,0,.36); }}
-    .headline {{ padding:28px; position:relative; overflow:hidden; }}
-    .eyebrow {{ color:var(--accent); font-weight:800; letter-spacing:.12em; text-transform:uppercase; font-size:12px; }}
-    h1 {{ margin:10px 0 12px; font-size:52px; line-height:.94; letter-spacing:-.06em; }}
-    .subtitle {{ color:#b9c6d8; font-size:17px; line-height:1.45; max-width:760px; }}
-    form {{ margin-top:22px; display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }}
+    body {{ margin:0; color:var(--ink); background:linear-gradient(135deg,#eef6ff,#f8fbff 45%,#e9fff7); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }}
+    main {{ width:min(1180px, calc(100% - 32px)); margin:0 auto; padding:24px 0 50px; }}
+    .hero {{ display:grid; grid-template-columns:1fr .9fr; gap:16px; align-items:stretch; }}
+    .card {{ background:rgba(255,255,255,.94); border:1px solid var(--line); border-radius:22px; box-shadow:0 18px 50px rgba(24,45,80,.11); }}
+    .headline {{ padding:24px; }}
+    .eyebrow {{ color:var(--blue); font-weight:900; letter-spacing:.12em; text-transform:uppercase; font-size:12px; }}
+    h1 {{ margin:8px 0 10px; font-size:44px; line-height:.98; letter-spacing:-.055em; color:var(--navy); }}
+    h2 {{ margin:0 0 14px; font-size:23px; letter-spacing:-.03em; color:var(--navy); }}
+    h3 {{ margin:0; color:var(--navy); }}
+    .subtitle {{ color:#536176; font-size:16px; line-height:1.45; }}
+    .demo-strip {{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-top:18px; }}
+    .preset-form {{ margin:0; }}
+    .preset-card {{ width:100%; height:100%; text-align:left; cursor:pointer; border:1px solid #cfe0f5; border-radius:17px; padding:13px; background:#f7fbff; color:var(--ink); }}
+    .preset-card span {{ display:block; color:var(--blue); text-transform:uppercase; font-size:10px; font-weight:900; letter-spacing:.08em; }}
+    .preset-card strong {{ display:block; margin:5px 0; }}
+    .preset-card small {{ color:var(--muted); line-height:1.3; }}
+    .controls {{ margin-top:18px; border-top:1px solid var(--line); padding-top:16px; }}
+    .control-grid {{ display:grid; grid-template-columns:1fr 170px 150px; gap:10px; }}
     .field {{ display:flex; flex-direction:column; gap:6px; min-width:0; }}
-    .field.scenario-field {{ grid-column:1 / -1; }}
-    .field label {{ color:#93c5fd; font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; }}
-    input, select, button {{ border:1px solid var(--line); border-radius:14px; padding:13px 14px; background:#0b1220; color:var(--ink); font:inherit; min-width:0; width:100%; }}
-    button {{ grid-column:1 / -1; background:linear-gradient(135deg, var(--accent), var(--blue)); color:#031018; border:0; font-weight:900; cursor:pointer; white-space:nowrap; }}
-    .result-card {{ padding:24px; }}
-    .big-score {{ font-size:74px; font-weight:950; letter-spacing:-.08em; }}
+    label {{ color:#34506f; font-size:11px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; }}
+    input, select, button.primary {{ border:1px solid var(--line); border-radius:14px; padding:13px 14px; background:white; color:var(--ink); font:inherit; min-width:0; width:100%; }}
+    button.primary {{ margin-top:10px; background:linear-gradient(135deg,var(--blue),#12b886); color:white; border:0; font-weight:900; cursor:pointer; }}
+    .result-card {{ padding:24px; border:2px solid rgba(20,99,255,.18); }}
+    .recommendation-final {{ background:linear-gradient(135deg,#0b1728,#12345d); color:white; border-radius:20px; padding:20px; margin-bottom:16px; }}
+    .recommendation-final .label {{ color:#9dd7ff; font-weight:900; text-transform:uppercase; letter-spacing:.08em; font-size:12px; }}
+    .recommendation-final .action {{ font-size:30px; line-height:1.05; font-weight:950; margin:8px 0; }}
     .badge {{ display:inline-flex; padding:7px 11px; border-radius:999px; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.06em; }}
-    .danger {{ background:rgba(251,113,133,.15); color:#fecdd3; border:1px solid rgba(251,113,133,.35); }}
-    .warn {{ background:rgba(251,191,36,.13); color:#fde68a; border:1px solid rgba(251,191,36,.35); }}
-    .soft {{ background:rgba(96,165,250,.12); color:#bfdbfe; border:1px solid rgba(96,165,250,.35); }}
-    .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; margin-top:18px; }}
-    .section {{ padding:22px; }}
-    h2 {{ margin:0 0 14px; font-size:22px; letter-spacing:-.03em; }}
-    .steps {{ display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; }}
-    .step-card {{ padding:16px; border-radius:18px; background:#0b1220; border:1px solid var(--line); }}
-    .step-label {{ color:var(--accent); font-size:12px; font-weight:900; text-transform:uppercase; }}
+    .danger {{ background:#ffe3ea; color:var(--red); }} .warn {{ background:#fff3bf; color:#8a5a00; }} .soft {{ background:#dbeafe; color:#1d4ed8; }}
+    .chips {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }} .chip {{ border:1px solid #b7e4d2; color:#087f5b; background:#ebfff6; padding:7px 10px; border-radius:999px; font-weight:800; }}
+    .explain-box {{ border:1px solid var(--line); border-radius:16px; padding:13px; background:#fbfdff; margin-top:10px; }}
+    .simple-line {{ font-size:16px; line-height:1.45; }}
+    .grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }}
+    .section {{ padding:20px; }}
+    .steps {{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }}
+    .step-card {{ padding:14px; border-radius:16px; background:#f7fbff; border:1px solid #d9e8f8; }}
+    .step-label {{ color:var(--blue); font-size:12px; font-weight:900; text-transform:uppercase; }}
     .step-value {{ margin-top:8px; font-weight:850; line-height:1.25; }}
-    .step-card p, .recommendation p, .explain p {{ color:var(--muted); line-height:1.42; margin-bottom:0; }}
-    .chips {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }}
-    .chip {{ border:1px solid rgba(110,231,183,.35); color:#bbf7d0; background:rgba(110,231,183,.09); padding:7px 10px; border-radius:999px; font-weight:750; }}
-    table {{ width:100%; border-collapse:collapse; overflow:hidden; border-radius:18px; }}
-    th, td {{ text-align:left; border-bottom:1px solid var(--line); padding:12px; color:#cbd5e1; vertical-align:top; }}
-    th {{ color:#93c5fd; font-size:12px; text-transform:uppercase; letter-spacing:.08em; }}
-    .scorebar {{ height:8px; width:120px; border-radius:99px; background:#0f172a; overflow:hidden; display:inline-block; margin-right:8px; }}
-    .scorebar i {{ display:block; height:100%; background:linear-gradient(90deg, var(--accent), var(--blue)); }}
-    .recommendation {{ border:1px solid var(--line); border-radius:18px; padding:16px; background:#0b1220; margin-bottom:12px; }}
+    .step-card p, .recommendation p, .callout p {{ color:var(--muted); line-height:1.42; margin-bottom:0; }}
+    table {{ width:100%; border-collapse:collapse; }} th,td {{ text-align:left; border-bottom:1px solid var(--line); padding:10px; color:#34445a; vertical-align:top; }} th {{ color:#174ea6; font-size:11px; text-transform:uppercase; letter-spacing:.08em; }}
+    .scorebar {{ height:8px; width:96px; border-radius:99px; background:#e8eef7; overflow:hidden; display:inline-block; margin-right:8px; }} .scorebar i {{ display:block; height:100%; background:linear-gradient(90deg,var(--blue),#12b886); }}
+    .recommendation {{ border:1px solid var(--line); border-radius:18px; padding:15px; background:#fbfdff; margin-bottom:12px; }}
     .recommendation-top {{ display:flex; justify-content:space-between; gap:12px; align-items:center; }}
-    h3 {{ margin:0; }}
-    .metrics {{ display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }}
-    .metrics span {{ padding:7px 10px; border-radius:999px; background:#111827; color:#aab8cc; border:1px solid var(--line); }}
-    .explain {{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }}
-    .callout {{ border-radius:18px; padding:16px; background:linear-gradient(135deg, rgba(96,165,250,.12), rgba(110,231,183,.08)); border:1px solid var(--line); }}
-    pre {{ max-height:360px; overflow:auto; background:#030712; border:1px solid var(--line); border-radius:18px; padding:16px; color:#d1fae5; }}
-    .paths {{ color:#93c5fd; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; overflow-wrap:anywhere; }}
-    @media(max-width:900px) {{ .hero,.grid,.explain {{ grid-template-columns:1fr; }} .steps {{ grid-template-columns:1fr; }} form {{ grid-template-columns:1fr; }} h1 {{ font-size:38px; }} }}
+    .metrics {{ display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; }} .metrics span {{ padding:7px 10px; border-radius:999px; background:#eef5ff; color:#42526a; border:1px solid #d9e8f8; }}
+    .callouts {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }} .callout {{ border-radius:18px; padding:16px; background:#fbfdff; border:1px solid var(--line); }}
+    pre {{ max-height:340px; overflow:auto; background:#0b1728; border-radius:18px; padding:16px; color:#d1fae5; }} .paths {{ color:#174ea6; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; overflow-wrap:anywhere; }}
+    @media(max-width:920px) {{ .hero,.grid,.callouts,.steps,.demo-strip,.control-grid {{ grid-template-columns:1fr; }} h1 {{ font-size:36px; }} }}
   </style>
 </head>
 <body>
   <main>
     <section class="hero">
       <div class="card headline">
-        <div class="eyebrow">Log as Code — MVP</div>
-        <h1>Décider quels logs collecter.</h1>
-        <p class="subtitle">Interface de démonstration : un scénario cyber est rapproché de MITRE ATT&CK, puis converti en recommandations de journalisation priorisées et expliquées.</p>
-        <form method="post" action="/generate">
-          <div class="field scenario-field"><label for="scenario">Scénario cyber</label><input id="scenario" name="scenario" value="{_escape(view['scenario'])}" aria-label="Scénario cyber"></div>
-          <div class="field"><label for="asset_id">Contexte actif</label><select id="asset_id" name="asset_id" aria-label="Actif">
-            <option value="win_srv_ops" {'selected' if view['asset_id'] == 'win_srv_ops' else ''}>win_srv_ops</option>
-            <option value="web_frontend" {'selected' if view['asset_id'] == 'web_frontend' else ''}>web_frontend</option>
-            <option value="network_dns" {'selected' if view['asset_id'] == 'network_dns' else ''}>network_dns</option>
-          </select></div>
-          <div class="field"><label for="strategy">Stratégie</label><select id="strategy" name="strategy" aria-label="Stratégie">
-            <option value="minimal" {'selected' if view['strategy'] == 'minimal' else ''}>minimal</option>
-            <option value="balanced" {'selected' if view['strategy'] == 'balanced' else ''}>balanced</option>
-            <option value="high_assurance" {'selected' if view['strategy'] == 'high_assurance' else ''}>high assurance</option>
-          </select></div>
-          <button type="submit">Analyser</button>
+        <div class="eyebrow">Démo guidée · Log as Code — MVP</div>
+        <h1>On choisit les logs utiles, pas juste “plus de logs”.</h1>
+        <p class="subtitle">But de la démo : entrer un scénario cyber, voir quelle technique MITRE est reconnue, puis comprendre précisément quelle source de logs collecter et pourquoi.</p>
+        <div class="demo-strip">{_render_presets()}</div>
+        <form method="post" action="/generate" class="controls">
+          <div class="control-grid">
+            <div class="field"><label for="scenario">Scénario à analyser</label><input id="scenario" name="scenario" value="{_escape(view['scenario'])}"></div>
+            <div class="field"><label for="asset_id">Actif</label><select id="asset_id" name="asset_id"><option value="win_srv_ops" {_selected(view['asset_id'], 'win_srv_ops')}>Windows ops</option><option value="web_frontend" {_selected(view['asset_id'], 'web_frontend')}>Web public</option><option value="network_dns" {_selected(view['asset_id'], 'network_dns')}>DNS / réseau</option></select></div>
+            <div class="field"><label for="strategy">Stratégie</label><select id="strategy" name="strategy"><option value="minimal" {_selected(view['strategy'], 'minimal')}>minimal</option><option value="balanced" {_selected(view['strategy'], 'balanced')}>balanced</option><option value="high_assurance" {_selected(view['strategy'], 'high_assurance')}>high assurance</option></select></div>
+          </div>
+          <button class="primary" type="submit">Analyser le scénario et générer la policy</button>
         </form>
       </div>
       <aside class="card result-card">
-        <div class="eyebrow">Résultat principal</div>
-        <div class="big-score">{_escape(top['log_value_score'])}</div>
-        <span class="badge {_badge_class(priority)}">{_escape(priority)}</span>
-        <h2>{_escape(view['selected_ttp_id'])} · {_escape(view['selected_ttp_name'])}</h2>
-        <p class="subtitle">Source recommandée : <strong>{_escape(top['log_source'])}</strong></p>
+        <div class="recommendation-final">
+          <div class="label">Recommandation finale</div>
+          <div class="action">Collecter {_escape(top['log_source'])}</div>
+          <span class="badge {_badge_class(priority)}">{_escape(priority)}</span>
+        </div>
+        <h2>En clair</h2>
+        <p class="simple-line"><strong>{_escape(view['executive_summary'])}</strong></p>
         <div class="chips">{fields_html}</div>
+        <div class="explain-box"><strong>Technique détectée :</strong> {_escape(view['selected_ttp_id'])} · {_escape(view['selected_ttp_name'])}<br><strong>Termes qui ont compté :</strong> {_escape(matched_terms)}<br><strong>Attention :</strong> Ce score n’est pas une probabilité, c’est une valeur de collecte.</div>
       </aside>
     </section>
 
-    <section class="card section" style="margin-top:18px;">
+    <section class="card section" style="margin-top:16px;">
       <h2>Interprétabilité — comment le moteur décide</h2>
       <div class="steps">{steps_html}</div>
     </section>
 
     <section class="grid">
-      <div class="card section">
-        <h2>Candidats MITRE trouvés par NLP</h2>
-        <table>
-          <thead><tr><th>Technique</th><th>Termes partagés</th><th>Similarité</th></tr></thead>
-          <tbody>{candidates_html}</tbody>
-        </table>
-      </div>
-      <div class="card section">
-        <h2>Recommandations de logs</h2>
-        {recommendations_html}
-      </div>
+      <div class="card section"><h2>1. Candidats MITRE trouvés par NLP</h2><table><thead><tr><th>Technique</th><th>Pourquoi elle sort</th><th>Similarité</th></tr></thead><tbody>{candidates_html}</tbody></table></div>
+      <div class="card section"><h2>2. Recommandations de logs</h2>{recommendations_html}</div>
     </section>
 
-    <section class="card section" style="margin-top:18px;">
+    <section class="card section" style="margin-top:16px;">
       <h2>Pourquoi ce résultat ?</h2>
-      <div class="explain">
-        <div class="callout"><h3>Justification opérationnelle</h3><p>{_escape(view['why_this_result'])}</p></div>
+      <div class="callouts">
+        <div class="callout"><h3>Pourquoi cette recommandation ?</h3><p>{_escape(view['why_this_result'])}</p></div>
         <div class="callout"><h3>Angle mort si absent</h3><p>{_escape(view['blind_spot'])}</p></div>
+        <div class="callout"><h3>Ce qu’on présente au jury</h3><p>Le MVP ne prétend pas “prédire magiquement”. Il explique une décision : scénario → MITRE → contexte actif → valeur de collecte → policy.</p></div>
       </div>
     </section>
 
-    <section class="card section" style="margin-top:18px;">
-      <h2>Exports générés</h2>
-      <p class="paths">JSON : {_escape(view['json_output'])}<br>YAML : {_escape(view['yaml_output'])}</p>
-      <details><summary>Voir la policy brute JSON</summary><pre>{raw_json}</pre></details>
-    </section>
+    <section class="card section" style="margin-top:16px;"><h2>Exports générés</h2><p class="paths">JSON : {_escape(view['json_output'])}<br>YAML : {_escape(view['yaml_output'])}</p><details><summary>Voir la policy brute JSON</summary><pre>{raw_json}</pre></details></section>
   </main>
 </body>
 </html>"""
@@ -306,8 +356,7 @@ class MvpRequestHandler(BaseHTTPRequestHandler):
         if self.path not in {"/", "/index.html"}:
             self._send_html("<h1>404</h1>", status=404)
             return
-        view = build_demo_view_model()
-        self._send_html(render_dashboard_html(view))
+        self._send_html(render_dashboard_html(build_demo_view_model()))
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path != "/generate":
@@ -315,11 +364,16 @@ class MvpRequestHandler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         data = parse_qs(self.rfile.read(length).decode("utf-8"))
-        scenario = data.get("scenario", [DEFAULT_SCENARIO])[0]
-        asset_id = data.get("asset_id", [DEFAULT_ASSET_ID])[0]
-        strategy = data.get("strategy", [DEFAULT_STRATEGY])[0]
-        view = build_demo_view_model(scenario=scenario, asset_id=asset_id, strategy=strategy)
-        self._send_html(render_dashboard_html(view))
+        if "preset" in data:
+            preset = EXAMPLE_SCENARIOS[int(data["preset"][0])]
+            scenario = preset["scenario"]
+            asset_id = preset["asset_id"]
+            strategy = preset["strategy"]
+        else:
+            scenario = data.get("scenario", [DEFAULT_SCENARIO])[0]
+            asset_id = data.get("asset_id", [DEFAULT_ASSET_ID])[0]
+            strategy = data.get("strategy", [DEFAULT_STRATEGY])[0]
+        self._send_html(render_dashboard_html(build_demo_view_model(scenario=scenario, asset_id=asset_id, strategy=strategy)))
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:

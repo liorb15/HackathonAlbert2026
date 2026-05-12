@@ -1,5 +1,5 @@
 policy:
-  name: "Politique priorisée pour T1048"
+  name: "Politique priorisée depuis scénario — T1048"
   target:
     threat_id: "T1048"
     ttp_id: "T1048"
@@ -13,6 +13,8 @@ policy:
     retention_days: "30"
     asset_notes: "Actif utile pour exfiltration et C2"
     strategy: "minimal"
+    scenario: "Exfiltration over alternative protocol dns data transfer"
+    selected_ttp_id: "T1048"
   decision_model:
     name: "Threat-to-Log Value Engine"
     principle: "Prioriser les logs selon menace, criticité de l'actif, couverture, coût et bruit."
@@ -20,6 +22,8 @@ policy:
       - "indispensable"
       - "recommandé"
       - "optionnel"
+    mode: "scenario_to_policy_mvp"
+    nlp_layer: "similarité texte légère sur MITRE ATT&CK Enterprise"
   recommendations:
     -
       log_source: "DNS Logs"
@@ -33,7 +37,7 @@ policy:
       estimated_cost: "moyen"
       estimated_noise: "fort"
       detection_coverage: "moyenne"
-      reason: "DNS Logs est classé optionnel pour T1048 car cette source permet d'observer DnsQuery, ProcessName, DestinationIP sur un actif de type network avec une criticité medium."
+      reason: "Sélection via NLP depuis le scénario utilisateur. DNS Logs est classé optionnel pour T1048 car cette source permet d'observer DnsQuery, ProcessName, DestinationIP sur un actif de type network avec une criticité medium."
       blind_spot_if_missing: "Angle mort potentiel : sans DNS Logs, l'équipe risque de moins bien détecter les comportements associés à T1048, notamment les signaux portés par DnsQuery, ProcessName, DestinationIP."
       covers:
         ttp_id: "T1048"
@@ -46,3 +50,81 @@ policy:
         sample_log: "DNS Query: attacker.com"
         splunk_query: "index=* sourcetype=dns Query=\\*.attacker.com\\\" | stats count by src_ip, Query"
         sigma_rule: "title: Detect DNS Tunneling Activity\nlogsource:\n  category: network_connection\n  product: windows\ndetection:\n  selection:\n    DestinationHostname|endswith: '.attacker.com'\n  condition: selection"
+  mitre_candidates:
+    -
+      ttp_id: "T1029"
+      name: "Scheduled Transfer"
+      tactics:
+        - "exfiltration"
+      data_sources:
+
+      similarity_score: 0.4685
+      matched_terms:
+        - "alternative"
+        - "data"
+        - "exfiltration"
+        - "over"
+        - "protocol"
+        - "transfer"
+      why: "Scheduled Transfer ressort car le scénario partage les termes alternative, data, exfiltration, over, protocol, transfer avec MITRE ATT&CK."
+    -
+      ttp_id: "T1020"
+      name: "Automated Exfiltration"
+      tactics:
+        - "exfiltration"
+      data_sources:
+
+      similarity_score: 0.4267
+      matched_terms:
+        - "alternative"
+        - "data"
+        - "exfiltration"
+        - "over"
+        - "protocol"
+        - "transfer"
+      why: "Automated Exfiltration ressort car le scénario partage les termes alternative, data, exfiltration, over, protocol, transfer avec MITRE ATT&CK."
+    -
+      ttp_id: "T1048.003"
+      name: "Exfiltration Over Unencrypted Non-C2 Protocol"
+      tactics:
+        - "exfiltration"
+      data_sources:
+
+      similarity_score: 0.4073
+      matched_terms:
+        - "data"
+        - "dns"
+        - "exfiltration"
+        - "over"
+        - "protocol"
+      why: "Exfiltration Over Unencrypted Non-C2 Protocol ressort car le scénario partage les termes data, dns, exfiltration, over, protocol avec MITRE ATT&CK."
+    -
+      ttp_id: "T1041"
+      name: "Exfiltration Over C2 Channel"
+      tactics:
+        - "exfiltration"
+      data_sources:
+
+      similarity_score: 0.3901
+      matched_terms:
+        - "data"
+        - "exfiltration"
+        - "over"
+        - "protocol"
+      why: "Exfiltration Over C2 Channel ressort car le scénario partage les termes data, exfiltration, over, protocol avec MITRE ATT&CK."
+    -
+      ttp_id: "T1048"
+      name: "Exfiltration Over Alternative Protocol"
+      tactics:
+        - "exfiltration"
+      data_sources:
+
+      similarity_score: 0.3576
+      matched_terms:
+        - "alternative"
+        - "data"
+        - "dns"
+        - "exfiltration"
+        - "over"
+        - "protocol"
+      why: "Exfiltration Over Alternative Protocol ressort car le scénario partage les termes alternative, data, dns, exfiltration, over, protocol avec MITRE ATT&CK."
