@@ -88,6 +88,18 @@ python3 scripts/log_value_engine.py \
   --format yaml
 ```
 
+### MVP scénario libre → MITRE → policy JSON/YAML
+
+```bash
+python3 scripts/log_value_engine.py \
+  --scenario 'PowerShell command execution and suspicious parent process on Windows server' \
+  --asset-id win_srv_ops \
+  --strategy balanced \
+  --format json
+```
+
+Cette commande sélectionne automatiquement une technique MITRE probable via NLP léger, puis génère une politique de logs priorisée si la TTP retenue existe dans la base de mapping du MVP.
+
 ### Tester la première brique NLP sur MITRE ATT&CK Généralisation
 
 ```bash
@@ -114,6 +126,8 @@ PY
 Chaque sortie contient :
 
 - la menace ciblée ;
+- éventuellement le scénario libre saisi par l’utilisateur ;
+- les candidats MITRE trouvés par similarité NLP quand le mode `--scenario` est utilisé ;
 - l’actif concerné ;
 - la stratégie de collecte ;
 - les sources de logs recommandées ;
@@ -171,7 +185,8 @@ TTP → log source → YAML
 Notre moteur fait plutôt :
 
 ```text
-TTP/CVE + actif + criticité + contrainte
+Scénario libre ou TTP/CVE + actif + criticité + contrainte
+→ matching MITRE si besoin
 → logs candidats
 → score explicable
 → priorité
@@ -219,7 +234,8 @@ Les tests vérifient que :
 - une policy est bien générée pour une TTP ;
 - les exports JSON et YAML fonctionnent ;
 - le gros export `Généralisation/enterprise-attack.json.zip` est bien parsé ;
-- la brique NLP recommande des techniques MITRE depuis un scénario texte libre.
+- la brique NLP recommande des techniques MITRE depuis un scénario texte libre ;
+- un scénario libre peut produire une policy complète via MITRE → mapping logs → scoring.
 
 ---
 
@@ -243,7 +259,7 @@ Ces limites sont normales pour cette étape.
 
 La suite la plus utile serait d’ajouter :
 
-1. une sortie CLI dédiée pour le mode `--mitre-scenario` ;
+1. plus de mappings TTP → sources de logs pour couvrir davantage de techniques MITRE ;
 2. un enrichissement CVE / CISA KEV ;
 3. une table coût/bruit plus explicite par source de logs ;
 4. une sortie HTML lisible pour démo ;

@@ -465,19 +465,34 @@ def build_policy(
         asset_type=asset_type,
         asset_criticality=asset_criticality,
     )
-    resolved_asset_type = asset_context["asset_type"]
-    resolved_criticality = asset_context["asset_criticality"]
+    return _build_policy_for_candidates(
+        threat_id=threat_id.strip(),
+        candidates=[
+            row
+            for row in load_mapping_rows(mapping_file)
+            if row["ttp_id"].lower() == threat_id.strip().lower()
+            or row.get("cve_id", "").lower() == threat_id.strip().lower()
+        ],
+        asset_context=asset_context,
+        strategy=strategy,
+    )
 
-    rows = load_mapping_rows(mapping_file)
-    threat_id = threat_id.strip()
-    candidates = [
-        row
-        for row in rows
-        if row["ttp_id"].lower() == threat_id.lower()
-        or row.get("cve_id", "").lower() == threat_id.lower()
-    ]
+
+def _build_policy_for_candidates(
+    *,
+    threat_id: str,
+    candidates: list[dict[str, Any]],
+    asset_context: dict[str, str],
+    strategy: str,
+    scenario: str | None = None,
+    mitre_candidates: list[dict[str, Any]] | None = None,
+    selected_ttp_id: str | None = None,
+) -> dict[str, Any]:
     if not candidates:
         raise PolicyEngineError(f"Aucun mapping trouvé pour la menace `{threat_id}`.")
+
+    resolved_asset_type = asset_context["asset_type"]
+    resolved_criticality = asset_context["asset_criticality"]
 
     scored = [
         score_candidate(
@@ -493,6 +508,9 @@ def build_policy(
     first = scored[0]
     recommendations = []
     for item in scored:
+        reason = item["reason"]
+        if scenario:
+            reason = f"Sélection via NLP depuis le scénario utilisateur. {reason}"
         recommendations.append(
             {
                 "log_source": item["log_source"],
@@ -503,7 +521,7 @@ def build_policy(
                 "estimated_cost": item["estimated_cost"],
                 "estimated_noise": item["estimated_noise"],
                 "detection_coverage": item["detection_coverage"],
-                "reason": item["reason"],
+                "reason": reason,
                 "blind_spot_if_missing": item["blind_spot_if_missing"],
                 "covers": {
                     "ttp_id": item["ttp_id"],
@@ -521,31 +539,94 @@ def build_policy(
             }
         )
 
-    return {
+    target = {
+        "threat_id": threat_id,
+        "ttp_id": first["ttp_id"],
+        "ttp_name": first["ttp_name"],
+        "asset_id": asset_context["asset_id"],
+        "asset_type": resolved_asset_type,
+        "asset_criticality": resolved_criticality,
+        "exposure": asset_context["exposure"],
+        "business_role": asset_context["business_role"],
+        "current_log_sources": asset_context["current_log_sources"],
+        "retention_days": asset_context["retention_days"],
+        "asset_notes": asset_context["asset_notes"],
+        "strategy": strategy,
+    }
+    if scenario:
+        target.update({"scenario": scenario, "selected_ttp_id": selected_ttp_id or first["ttp_id"]})
+
+    decision_model = {
+        "name": "Threat-to-Log Value Engine",
+        "principle": "Prioriser les logs selon menace, criticité de l'actif, couverture, coût et bruit.",
+        "priority_levels": ["indispensable", "recommandé", "optionnel"],
+    }
+    if scenario:
+        decision_model["mode"] = "scenario_to_policy_mvp"
+        decision_model["nlp_layer"] = "similarité texte légère sur MITRE ATT&CK Enterprise"
+
+    policy = {
         "policy": {
             "name": f"Politique priorisée pour {threat_id}",
-            "target": {
-                "threat_id": threat_id,
-                "ttp_id": first["ttp_id"],
-                "ttp_name": first["ttp_name"],
-                "asset_id": asset_context["asset_id"],
-                "asset_type": resolved_asset_type,
-                "asset_criticality": resolved_criticality,
-                "exposure": asset_context["exposure"],
-                "business_role": asset_context["business_role"],
-                "current_log_sources": asset_context["current_log_sources"],
-                "retention_days": asset_context["retention_days"],
-                "asset_notes": asset_context["asset_notes"],
-                "strategy": strategy,
-            },
-            "decision_model": {
-                "name": "Threat-to-Log Value Engine",
-                "principle": "Prioriser les logs selon menace, criticité de l'actif, couverture, coût et bruit.",
-                "priority_levels": ["indispensable", "recommandé", "optionnel"],
-            },
+            "target": target,
+            "decision_model": decision_model,
             "recommendations": recommendations,
         }
     }
+    if mitre_candidates is not None:
+        policy["policy"]["mitre_candidates"] = mitre_candidates
+    return policy
+
+
+def build_policy_from_scenario(
+    scenario: str,
+    *,
+    mapping_file: Path = DEFAULT_MAPPING_FILE,
+    mitre_zip_file: Path = DEFAULT_MITRE_ATTACK_ZIP_FILE,
+    asset_id: str | None = None,
+    asset_inventory_file: Path = DEFAULT_ASSET_INVENTORY_FILE,
+    asset_type: str = "generic_asset",
+    asset_criticality: str = "medium",
+    strategy: str = "balanced",
+    top_n: int = 5,
+) -> dict[str, Any]:
+    """Build a policy from free text by selecting a MITRE technique, then logs.
+
+    MVP behavior: use the Généralisation MITRE corpus to rank likely TTPs, then
+    connect the first candidate that exists in the starter TTP/CVE/log mapping.
+    This turns the demo into a concrete flow: scenario → MITRE → logs → policy.
+    """
+
+    mitre_candidates = recommend_similar_mitre_techniques(scenario, mitre_zip_file=mitre_zip_file, top_n=top_n)
+    rows = load_mapping_rows(mapping_file)
+    rows_by_ttp: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        rows_by_ttp.setdefault(row["ttp_id"].lower(), []).append(row)
+
+    selected = next((candidate for candidate in mitre_candidates if candidate["ttp_id"].lower() in rows_by_ttp), None)
+    if not selected:
+        raise PolicyEngineError(
+            "Aucune technique MITRE recommandée n'a encore de mapping logs dans le MVP. "
+            "Ajoutez une ligne TTP/CVE/logs ou reformulez le scénario."
+        )
+
+    asset_context = _resolve_asset_context(
+        asset_id=asset_id,
+        asset_inventory_file=asset_inventory_file,
+        asset_type=asset_type,
+        asset_criticality=asset_criticality,
+    )
+    policy = _build_policy_for_candidates(
+        threat_id=selected["ttp_id"],
+        candidates=rows_by_ttp[selected["ttp_id"].lower()],
+        asset_context=asset_context,
+        strategy=strategy,
+        scenario=scenario,
+        mitre_candidates=mitre_candidates,
+        selected_ttp_id=selected["ttp_id"],
+    )
+    policy["policy"]["name"] = f"Politique priorisée depuis scénario — {selected['ttp_id']}"
+    return policy
 
 
 def _to_yaml_like(value: Any, indent: int = 0) -> str:
@@ -591,8 +672,9 @@ def export_policy(policy: dict[str, Any], output_dir: Path = DEFAULT_OUTPUT_DIR,
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Génère une politique de logs priorisée pour une TTP ou CVE.")
-    parser.add_argument("--threat", required=True, help="Identifiant TTP ou CVE, ex: T1059 ou CVE-2021-44228")
+    parser = argparse.ArgumentParser(description="Génère une politique de logs priorisée pour une TTP, CVE ou scénario libre.")
+    parser.add_argument("--threat", default=None, help="Identifiant TTP ou CVE, ex: T1059 ou CVE-2021-44228")
+    parser.add_argument("--scenario", default=None, help="Scénario texte libre à rapprocher de MITRE ATT&CK, ex: PowerShell suspicious parent process")
     parser.add_argument("--asset-id", default=None, help="Identifiant d'actif à résoudre depuis la mini-CMDB")
     parser.add_argument("--asset-inventory", type=Path, default=DEFAULT_ASSET_INVENTORY_FILE, help="Fichier CSV de mini-CMDB")
     parser.add_argument("--asset-type", default="generic_asset", help="Type d'actif, ex: windows_server, web_server")
@@ -600,18 +682,34 @@ def main() -> None:
     parser.add_argument("--strategy", default="balanced", choices=sorted(STRATEGY_MULTIPLIERS), help="Stratégie de collecte")
     parser.add_argument("--format", default="json", choices=["json", "yaml"], help="Format de sortie")
     parser.add_argument("--mapping-file", type=Path, default=DEFAULT_MAPPING_FILE)
+    parser.add_argument("--mitre-zip-file", type=Path, default=DEFAULT_MITRE_ATTACK_ZIP_FILE)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
 
-    policy = build_policy(
-        args.mapping_file,
-        threat_id=args.threat,
-        asset_id=args.asset_id,
-        asset_inventory_file=args.asset_inventory,
-        asset_type=args.asset_type,
-        asset_criticality=args.criticality,
-        strategy=args.strategy,
-    )
+    if bool(args.threat) == bool(args.scenario):
+        raise PolicyEngineError("Fournir exactement une option : --threat OU --scenario.")
+
+    if args.scenario:
+        policy = build_policy_from_scenario(
+            args.scenario,
+            mapping_file=args.mapping_file,
+            mitre_zip_file=args.mitre_zip_file,
+            asset_id=args.asset_id,
+            asset_inventory_file=args.asset_inventory,
+            asset_type=args.asset_type,
+            asset_criticality=args.criticality,
+            strategy=args.strategy,
+        )
+    else:
+        policy = build_policy(
+            args.mapping_file,
+            threat_id=args.threat,
+            asset_id=args.asset_id,
+            asset_inventory_file=args.asset_inventory,
+            asset_type=args.asset_type,
+            asset_criticality=args.criticality,
+            strategy=args.strategy,
+        )
     output_path = export_policy(policy, args.output_dir, fmt=args.format)
     print(output_path)
 

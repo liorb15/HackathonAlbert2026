@@ -9,6 +9,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from log_value_engine import (  # noqa: E402
     build_policy,
+    build_policy_from_scenario,
     export_policy,
     load_asset_inventory,
     load_mapping_rows,
@@ -122,6 +123,30 @@ class LogValueEngineTest(unittest.TestCase):
         self.assertGreater(recommendations[0]["similarity_score"], 0)
         self.assertIn("Command", recommendations[0]["why"])
         self.assertIn("Windows", recommendations[0]["matched_terms"])
+
+    def test_build_policy_from_scenario_links_mitre_nlp_to_log_recommendations(self):
+        policy = build_policy_from_scenario(
+            "PowerShell command execution and suspicious parent process on Windows server",
+            mapping_file=MAPPING_FILE,
+            mitre_zip_file=MITRE_ZIP_FILE,
+            asset_id="win_srv_ops",
+            asset_inventory_file=ASSET_FILE,
+            strategy="balanced",
+        )
+
+        target = policy["policy"]["target"]
+        self.assertEqual(target["scenario"], "PowerShell command execution and suspicious parent process on Windows server")
+        self.assertEqual(target["selected_ttp_id"], "T1059")
+        self.assertEqual(target["asset_id"], "win_srv_ops")
+        self.assertEqual(policy["policy"]["decision_model"]["mode"], "scenario_to_policy_mvp")
+
+        self.assertGreaterEqual(len(policy["policy"]["mitre_candidates"]), 3)
+        self.assertEqual(policy["policy"]["mitre_candidates"][0]["ttp_id"], "T1059")
+        self.assertGreaterEqual(len(policy["policy"]["recommendations"]), 1)
+        first_recommendation = policy["policy"]["recommendations"][0]
+        self.assertEqual(first_recommendation["log_source"], "Windows Sysmon")
+        self.assertEqual(first_recommendation["priority"], "indispensable")
+        self.assertIn("NLP", first_recommendation["reason"])
 
 
 if __name__ == "__main__":
