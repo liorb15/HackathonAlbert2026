@@ -17,8 +17,11 @@ from log_value_engine import (
     DEFAULT_ASSET_INVENTORY_FILE,
     DEFAULT_MAPPING_FILE,
     DEFAULT_MITRE_ATTACK_ZIP_FILE,
+    PolicyEngineError,
     build_policy_from_scenario,
     export_policy,
+    load_asset_inventory,
+    recommend_similar_mitre_techniques,
 )
 
 DEFAULT_SCENARIO = "PowerShell command execution and suspicious parent process on Windows server"
@@ -72,16 +75,21 @@ def build_demo_view_model(
 ) -> dict:
     """Build a presentation-focused view model from the backend policy."""
 
-    policy = build_policy_from_scenario(
-        scenario,
-        mapping_file=DEFAULT_MAPPING_FILE,
-        mitre_zip_file=DEFAULT_MITRE_ATTACK_ZIP_FILE,
-        asset_id=asset_id,
-        asset_inventory_file=DEFAULT_ASSET_INVENTORY_FILE,
-        strategy=strategy,
-    )
-    export_policy(policy, DEFAULT_UI_OUTPUT_DIR, fmt="json")
-    export_policy(policy, DEFAULT_UI_OUTPUT_DIR, fmt="yaml")
+    try:
+        policy = build_policy_from_scenario(
+            scenario,
+            mapping_file=DEFAULT_MAPPING_FILE,
+            mitre_zip_file=DEFAULT_MITRE_ATTACK_ZIP_FILE,
+            asset_id=asset_id,
+            asset_inventory_file=DEFAULT_ASSET_INVENTORY_FILE,
+            strategy=strategy,
+        )
+        status = "mapped"
+        export_policy(policy, DEFAULT_UI_OUTPUT_DIR, fmt="json")
+        export_policy(policy, DEFAULT_UI_OUTPUT_DIR, fmt="yaml")
+    except PolicyEngineError:
+        policy = _build_gap_policy(scenario=scenario, asset_id=asset_id, strategy=strategy)
+        status = "gap"
 
     body = policy["policy"]
     target = body["target"]
@@ -99,6 +107,11 @@ def build_demo_view_model(
         f"Collecter {top['log_source']} sur {target['asset_id']} pour détecter {target['selected_ttp_id']} "
         f"({target['ttp_name']}). Priorité : {top['priority']}."
     )
+    if status == "gap":
+        executive_summary = (
+            f"Mapping à compléter pour {target['selected_ttp_id']} sur {target['asset_id']} : "
+            "le moteur identifie une piste MITRE, mais ne recommande pas encore de collecte de logs validée."
+        )
     plain_language_result = {
         "title": "Pourquoi cette recommandation est importante",
         "body": (
@@ -138,6 +151,7 @@ def build_demo_view_model(
     )
 
     return {
+        "status": status,
         "scenario": scenario,
         "asset_id": target["asset_id"],
         "asset_type": target["asset_type"],
@@ -160,6 +174,61 @@ def build_demo_view_model(
     }
 
 
+def _build_gap_policy(*, scenario: str, asset_id: str, strategy: str) -> dict:
+    assets = load_asset_inventory(DEFAULT_ASSET_INVENTORY_FILE)
+    asset = assets.get(asset_id, {})
+    mitre_candidates = recommend_similar_mitre_techniques(scenario, mitre_zip_file=DEFAULT_MITRE_ATTACK_ZIP_FILE, top_n=5)
+    selected = mitre_candidates[0] if mitre_candidates else {"ttp_id": "à qualifier", "name": "Technique à qualifier"}
+    candidate_id = selected.get("ttp_id", "à qualifier")
+    candidate_name = selected.get("name", "Technique à qualifier")
+    asset_type = asset.get("asset_type", "actif à qualifier")
+    criticality = asset.get("criticality", "medium")
+    gap_recommendation = {
+        "log_source": "Pas encore de mapping validé",
+        "log_type": "knowledge_gap",
+        "priority": "à compléter",
+        "log_value_score": "N/A",
+        "fields": ["prochaine action : qualifier les logs disponibles"],
+        "estimated_cost": "à estimer",
+        "estimated_noise": "à estimer",
+        "detection_coverage": "non évaluée",
+        "reason": (
+            f"Le scénario ressemble à {candidate_id}, mais le MVP ne possède pas encore de règle fiable "
+            "qui relie cette technique à une source de logs pour cet actif."
+        ),
+        "blind_spot_if_missing": (
+            "Angle mort actuel : sans mapping TTP → logs, l'équipe ne peut pas justifier proprement "
+            "quelle télémétrie collecter. La prochaine action est d'ajouter ou valider ce mapping."
+        ),
+        "covers": {"ttp_id": candidate_id, "ttp_name": candidate_name, "tactic": "à qualifier", "cve_id": "", "cve_description": "", "cve_score": ""},
+        "detection_examples": {"sample_log": "", "splunk_query": "", "sigma_rule": ""},
+    }
+    return {
+        "policy": {
+            "name": f"Gap de connaissance — {candidate_id}",
+            "target": {
+                "threat_id": candidate_id,
+                "ttp_id": candidate_id,
+                "ttp_name": candidate_name,
+                "asset_id": asset_id,
+                "asset_type": asset_type,
+                "asset_criticality": criticality,
+                "exposure": asset.get("exposure", "unknown"),
+                "business_role": asset.get("business_role", "Contexte actif à qualifier"),
+                "current_log_sources": asset.get("current_log_sources", ""),
+                "retention_days": asset.get("retention_days", ""),
+                "asset_notes": asset.get("notes", ""),
+                "strategy": strategy,
+                "scenario": scenario,
+                "selected_ttp_id": candidate_id,
+            },
+            "decision_model": {"name": "Threat-to-Log Value Engine", "mode": "gap_analysis", "principle": "Signaler clairement quand le mapping n'est pas assez fiable."},
+            "recommendations": [gap_recommendation],
+            "mitre_candidates": mitre_candidates,
+        }
+    }
+
+
 def _render_presets() -> str:
     cards = []
     for index, preset in enumerate(EXAMPLE_SCENARIOS):
@@ -168,7 +237,7 @@ def _render_presets() -> str:
             <form method="post" action="/generate" class="preset-form">
               <input type="hidden" name="preset" value="{index}">
               <button class="preset-card" type="submit">
-                <span>Tester un exemple</span>
+                <span>Lancer cette situation</span>
                 <strong>{_escape(preset['label'])}</strong>
                 <small>{_escape(preset['what_to_expect'])}</small>
               </button>
@@ -267,7 +336,7 @@ def render_dashboard_html(view: dict) -> str:
     .recommendation-final .label {{ color:#9dd7ff; font-weight:900; text-transform:uppercase; letter-spacing:.08em; font-size:12px; }}
     .recommendation-final .action {{ font-size:30px; line-height:1.05; font-weight:950; margin:8px 0; }}
     .badge {{ display:inline-flex; padding:7px 11px; border-radius:999px; font-size:12px; font-weight:900; text-transform:uppercase; letter-spacing:.06em; }}
-    .danger {{ background:#ffe3ea; color:var(--red); }} .warn {{ background:#fff3bf; color:#8a5a00; }} .soft {{ background:#dbeafe; color:#1d4ed8; }}
+    .danger {{ background:#ffe3ea; color:var(--red); }} .warn {{ background:#fff3bf; color:#8a5a00; }} .soft {{ background:#dbeafe; color:#1d4ed8; }} .gap {{ background:#fff4e6 !important; color:#9a3412 !important; }}
     .chips {{ display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }} .chip {{ border:1px solid #b7e4d2; color:#087f5b; background:#ebfff6; padding:7px 10px; border-radius:999px; font-weight:800; }}
     .explain-box {{ border:1px solid var(--line); border-radius:16px; padding:13px; background:#fbfdff; margin-top:10px; }}
     .simple-line {{ font-size:16px; line-height:1.45; }}
@@ -292,7 +361,7 @@ def render_dashboard_html(view: dict) -> str:
   <main>
     <section class="hero">
       <div class="card headline">
-        <div class="eyebrow">Démo guidée · Log as Code — MVP</div>
+        <div class="eyebrow">Dashboard de décision · Log as Code — MVP</div>
         <h1>On choisit les logs utiles, pas juste “plus de logs”.</h1>
         <p class="subtitle">But de la démo : entrer un scénario cyber, voir quelle technique MITRE est reconnue, puis comprendre précisément quelle source de logs collecter et pourquoi.</p>
         <div class="demo-strip">{_render_presets()}</div>
@@ -307,11 +376,11 @@ def render_dashboard_html(view: dict) -> str:
       </div>
       <aside class="card result-card">
         <div class="recommendation-final">
-          <div class="label">Recommandation finale</div>
+          <div class="label">Décision recommandée</div>
           <div class="action">Collecter {_escape(top['log_source'])}</div>
           <span class="badge {_badge_class(priority)}">{_escape(priority)}</span>
         </div>
-        <h2>En clair</h2>
+        <h2>Ce que ça veut dire</h2>
         <p class="simple-line"><strong>{_escape(view['executive_summary'])}</strong></p>
         <div class="chips">{fields_html}</div>
         <div class="explain-box"><strong>Technique détectée :</strong> {_escape(view['selected_ttp_id'])} · {_escape(view['selected_ttp_name'])}<br><strong>Termes qui ont compté :</strong> {_escape(matched_terms)}<br><strong>Attention :</strong> Ce score n’est pas une probabilité, c’est une valeur de collecte.</div>

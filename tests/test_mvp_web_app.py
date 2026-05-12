@@ -45,11 +45,12 @@ class MvpWebAppTest(unittest.TestCase):
         self.assertIn("CommandLine", html)
         self.assertIn("T1059", html)
         self.assertIn("<form", html)
-        self.assertIn("Démo guidée", html)
-        self.assertIn("Recommandation finale", html)
-        self.assertIn("En clair", html)
-        self.assertIn("Tester un exemple", html)
+        self.assertIn("Dashboard de décision", html)
+        self.assertIn("Décision recommandée", html)
+        self.assertIn("Ce que ça veut dire", html)
+        self.assertIn("Lancer cette situation", html)
         self.assertIn("Ce score n’est pas une probabilité", html)
+        self.assertIn("details", html)
         self.assertGreaterEqual(html.count("name=\"preset\""), 3)
 
     def test_example_scenarios_make_the_interface_interactive(self):
@@ -62,6 +63,18 @@ class MvpWebAppTest(unittest.TestCase):
                 strategy=preset["strategy"],
             )
             self.assertTrue(view["executive_summary"])
+    def test_unknown_scenario_returns_contextual_gap_instead_of_crashing(self):
+        view = build_demo_view_model(
+            scenario="totally unknown maritime cyber situation without existing log mapping",
+            asset_id="web_frontend",
+            strategy="balanced",
+        )
+        html = render_dashboard_html(view)
+
+        self.assertEqual(view["status"], "gap")
+        self.assertIn("à compléter", view["executive_summary"])
+        self.assertIn("Pas encore de mapping", html)
+        self.assertIn("prochaine action", html.lower())
 
 
 if __name__ == "__main__":
